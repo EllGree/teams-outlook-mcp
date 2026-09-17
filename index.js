@@ -7,8 +7,8 @@ import { getAccessToken, graphGet, graphGetBinary, graphPost } from "./lib/graph
 import { partitionTools, scopesFromToken } from "./lib/scopes.js";
 import { describeChat, hostedImageUrls, listChats, resolveChat } from "./lib/chats.js";
 import { appendSignatureHtml, appendSignatureText, htmlToText, textToHtml } from "./lib/html.js";
+import { READ_ONLY } from "./lib/config.js";
 
-const READ_ONLY = /^(1|true|yes)$/i.test(process.env.TEAMS_OUTLOOK_MCP_READONLY || "");
 
 // An oversized base64 blob costs the caller its context and helps nobody, so past this a file is
 // handed over as a URL instead of bytes.

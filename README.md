@@ -46,9 +46,17 @@ Register the server with your MCP client as stdio: command `node`, argument the 
 
 ## Config
 
-The token cache lives at `%LOCALAPPDATA%\teams-outlook-mcp\tokens.json`, or wherever `TEAMS_OUTLOOK_MCP_TOKENS` points. It is deliberately this server's own: another tool refreshing the same cache with a narrower scope list would quietly cost this one its permissions.
+`config.json` next to `index.js`, or the matching environment variables. A value left at the example placeholder counts as absent, so a half-filled `config.json` falls through to the environment instead of sending a placeholder to Entra.
 
-`TEAMS_OUTLOOK_MCP_READONLY=1` withholds every sending tool whatever the token allows.
+| Key | Environment | Meaning |
+|---|---|---|
+| `tenantId` | `TEAMS_OUTLOOK_MCP_TENANT_ID` | Your Entra tenant. Required. |
+| `clientId` | `TEAMS_OUTLOOK_MCP_CLIENT_ID` | The app registration to sign in against. Required. |
+| `signature` | `TEAMS_OUTLOOK_MCP_SIGNATURE` | Appended to every message sent. Defaults to a generic one rather than to nothing, so a reader can always tell a program wrote it. |
+| `tokenPath` | `TEAMS_OUTLOOK_MCP_TOKENS` | Where the token cache lives. Defaults to `%LOCALAPPDATA%\teams-outlook-mcp\tokens.json`. |
+| `readOnly` | `TEAMS_OUTLOOK_MCP_READONLY` | Withholds every sending tool whatever the token allows. |
+
+`config.json` is gitignored. The token cache is deliberately this server's own: another tool refreshing the same cache with a narrower scope list would quietly cost this one its permissions.
 
 ## Notes
 

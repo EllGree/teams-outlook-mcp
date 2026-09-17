@@ -1,0 +1,6 @@
+{
+  "tenantId": "<your Entra tenant id>",
+  "clientId": "<your app registration client id>",
+  "signature": "🤖 sent by an assistant",
+  "readOnly": false
+}
