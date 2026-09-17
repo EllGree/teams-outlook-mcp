@@ -1,0 +1,13 @@
+{
+  "name": "teams-outlook-mcp",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": { "teams-outlook-mcp": "./index.js" },
+  "scripts": {
+    "auth": "node auth.js",
+    "test": "node --test lib/scopes.test.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}
