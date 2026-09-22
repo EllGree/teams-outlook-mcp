@@ -453,7 +453,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (result && Array.isArray(result.content)) return result;
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   } catch (err) {
-    return { isError: true, content: [{ type: "text", text: `Error: ${err.message || String(err)}` }] };
+    // `fetch failed` on its own says nothing. The reason lives in err.cause, and without
+    // it a TLS failure, a DNS miss and a refused connection all read the same. The TLS
+    // case matters most: on a machine where antivirus or a proxy re-signs HTTPS, the
+    // server fails on every call while auth.js, run from a shell that inherits
+    // NODE_EXTRA_CA_CERTS, works fine.
+    const causes = [];
+    for (let e = err.cause; e; e = e.cause) causes.push(e.code || e.message);
+    const detail = causes.length ? ` (cause: ${causes.join(" <- ")})` : "";
+    return { isError: true, content: [{ type: "text", text: `Error: ${err.message || String(err)}${detail}` }] };
   }
 });
 
