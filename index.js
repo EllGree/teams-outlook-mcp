@@ -199,8 +199,26 @@ async function toolChannelMessages(token, { team_id, channel_id, top = 20 }) {
       from: m.from?.user?.displayName,
       subject: m.subject || undefined,
       text: htmlToText(m.body?.content),
+      images: hostedImageUrls(m).length,
     })),
   };
+}
+
+async function toolChannelImage(token, { team_id, channel_id, message_id, parent_message_id, index = 0 }) {
+  if (!team_id || !channel_id || !message_id) throw new Error("team_id, channel_id and message_id are required");
+  const base = `/teams/${encodeURIComponent(team_id)}/channels/${encodeURIComponent(channel_id)}/messages`;
+  // A reply has no address of its own: it is only reachable underneath its parent post,
+  // so fetching an image posted in a thread needs the parent's id as well.
+  const path = parent_message_id
+    ? `${base}/${encodeURIComponent(parent_message_id)}/replies/${encodeURIComponent(message_id)}`
+    : `${base}/${encodeURIComponent(message_id)}`;
+  const m = await graphGet(token, path);
+  const urls = hostedImageUrls(m);
+  if (!urls.length) throw new Error("That message carries no inline image");
+  const url = urls[Number(index) || 0];
+  if (!url) throw new Error(`Message has ${urls.length} image(s); index ${index} is out of range`);
+  const { buffer, mediaType } = await graphGetBinary(token, url);
+  return imageOrText(`image ${Number(index) + 1} of ${urls.length}`, buffer, mediaType, url);
 }
 
 async function toolChannelSend(token, { team_id, channel_id, text }) {
@@ -340,6 +358,23 @@ const TOOLS = [
     },
   },
   {
+    name: "channel_image",
+    scopes: ["ChannelMessage.Read.All"],
+    description:
+      "The inline image in a channel post, returned as a viewable image. For an image inside a thread reply, pass the reply's id as message_id and the opening post's id as parent_message_id.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        team_id: { type: "string" },
+        channel_id: { type: "string" },
+        message_id: { type: "string" },
+        parent_message_id: { type: "string", description: "The opening post's id, when message_id is a reply" },
+        index: { type: "number", default: 0 },
+      },
+      required: ["team_id", "channel_id", "message_id"],
+    },
+  },
+  {
     name: "channel_send",
     scopes: ["ChannelMessage.Send"],
     writes: true,
@@ -365,6 +400,7 @@ const HANDLERS = {
   team_list: toolTeamList,
   channel_list: toolChannelList,
   channel_messages: toolChannelMessages,
+  channel_image: toolChannelImage,
   channel_send: toolChannelSend,
 };
 
