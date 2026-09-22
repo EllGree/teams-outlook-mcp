@@ -186,22 +186,85 @@ async function toolChannelList(token, { team_id }) {
   return { results: (r.value || []).map((c) => ({ id: c.id, name: c.displayName, description: c.description })) };
 }
 
+const realMessage = (m) => m.messageType === "message" && !m.deletedDateTime;
+
+// Not every attachment has a name. A card, and some shared references, carry only a
+// contentType, and mapping names alone turns those posts into empty ones: no text, no
+// author, nothing attached, which is what they are not. Say what the thing is instead.
+const describeAttachments = (m) =>
+  (m.attachments || []).map((a) => a.name || a.contentType || "unnamed attachment");
+
+// The channel view: opening posts with a reply count, not the replies themselves. Graph
+// hands the replies over in the same request via $expand, and they are deliberately
+// dropped here. A channel where fifteen posts carry thirty replies each is a thousand
+// messages, and pouring that into an answer to "what is happening in this channel" costs
+// more than it tells. The count says whether there is a conversation; channel_thread goes
+// and reads it.
+//
+// Graph orders these by the last modified date of the whole reply chain, so a post from
+// last year that gained a reply this morning comes back at the top on its own.
 async function toolChannelMessages(token, { team_id, channel_id, top = 20 }) {
   if (!team_id || !channel_id) throw new Error("team_id and channel_id are required");
   const r = await graphGet(
     token,
-    `/teams/${encodeURIComponent(team_id)}/channels/${encodeURIComponent(channel_id)}/messages?$top=${Math.min(Number(top) || 20, 50)}`
+    `/teams/${encodeURIComponent(team_id)}/channels/${encodeURIComponent(channel_id)}/messages?$top=${Math.min(Number(top) || 20, 50)}&$expand=replies`
   );
   return {
-    results: (r.value || []).map((m) => ({
-      id: m.id,
-      sent: m.createdDateTime,
-      from: m.from?.user?.displayName,
-      subject: m.subject || undefined,
-      text: htmlToText(m.body?.content),
-      images: hostedImageUrls(m).length,
-    })),
+    // A channel also carries posts Graph types as "message" that have no named author and
+    // nothing in them. Checking for a `from.user` object does not catch these, because the
+    // object is there with a null displayName. Judge them on what they carry instead: a
+    // post with no author, no text, no image, no file and no replies has nothing to show.
+    results: (r.value || [])
+      .filter((m) => {
+        if (!realMessage(m)) return false;
+        if (m.from?.user?.displayName || m.from?.application?.displayName) return true;
+        return Boolean(
+          htmlToText(m.body?.content) ||
+          (m.attachments || []).length ||
+          hostedImageUrls(m).length ||
+          (m.replies || []).filter(realMessage).length
+        );
+      })
+      .map((m) => {
+      const replies = (m.replies || []).filter(realMessage);
+      const last = replies.reduce((a, x) => (!a || x.createdDateTime > a ? x.createdDateTime : a), null);
+      return {
+        id: m.id,
+        sent: m.createdDateTime,
+        from: m.from?.user?.displayName,
+        subject: m.subject || undefined,
+        text: htmlToText(m.body?.content),
+        images: hostedImageUrls(m).length,
+        // A shared file leaves the body empty and lives only in attachments, so without
+        // this a post that is nothing but a file reads as a post with nothing in it.
+        attachments: describeAttachments(m),
+        // $expand caps at 200 replies per post, so a thread deeper than that undercounts.
+        replies: replies.length,
+        last_reply: last || undefined,
+      };
+    }),
   };
+}
+
+async function toolChannelThread(token, { team_id, channel_id, message_id, top = 50 }) {
+  if (!team_id || !channel_id || !message_id) throw new Error("team_id, channel_id and message_id are required");
+  const base = `/teams/${encodeURIComponent(team_id)}/channels/${encodeURIComponent(channel_id)}/messages/${encodeURIComponent(message_id)}`;
+  const post = await graphGet(token, base);
+  const r = await graphGet(token, `${base}/replies?$top=${Math.min(Number(top) || 50, 50)}`);
+  const render = (m) => ({
+    id: m.id,
+    sent: m.createdDateTime,
+    from: m.from?.user?.displayName || m.from?.application?.displayName,
+    text: htmlToText(m.body?.content),
+    images: hostedImageUrls(m).length,
+    attachments: describeAttachments(m),
+  });
+  // Graph returns replies newest first; a conversation reads the other way.
+  const replies = (r.value || [])
+    .filter(realMessage)
+    .sort((a, b) => new Date(a.createdDateTime) - new Date(b.createdDateTime))
+    .map(render);
+  return { post: render(post), reply_count: replies.length, replies };
 }
 
 async function toolChannelImage(token, { team_id, channel_id, message_id, parent_message_id, index = 0 }) {
@@ -350,11 +413,28 @@ const TOOLS = [
   {
     name: "channel_messages",
     scopes: ["ChannelMessage.Read.All"],
-    description: "Messages posted in a channel.",
+    description:
+      "Opening posts in a channel, each with a reply count and the time of the last reply. The replies themselves are not included, so use channel_thread on any post whose count is worth reading. Ordered by last activity in the whole thread, so a post that just gained a reply comes first.",
     inputSchema: {
       type: "object",
       properties: { team_id: { type: "string" }, channel_id: { type: "string" }, top: { type: "number", default: 20 } },
       required: ["team_id", "channel_id"],
+    },
+  },
+  {
+    name: "channel_thread",
+    scopes: ["ChannelMessage.Read.All"],
+    description:
+      "One channel thread in full: the opening post and its replies, oldest first. To fetch an image from a reply, pass the reply's id to channel_image as message_id with this post's id as parent_message_id.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        team_id: { type: "string" },
+        channel_id: { type: "string" },
+        message_id: { type: "string", description: "The opening post's id, from channel_messages" },
+        top: { type: "number", default: 50 },
+      },
+      required: ["team_id", "channel_id", "message_id"],
     },
   },
   {
@@ -400,6 +480,7 @@ const HANDLERS = {
   team_list: toolTeamList,
   channel_list: toolChannelList,
   channel_messages: toolChannelMessages,
+  channel_thread: toolChannelThread,
   channel_image: toolChannelImage,
   channel_send: toolChannelSend,
 };
