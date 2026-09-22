@@ -145,7 +145,7 @@ async function toolChatMessages(token, { chat_id, chat_name, top = 20 }) {
         sent: m.createdDateTime,
         from: m.from?.user?.displayName || m.from?.application?.displayName,
         text: htmlToText(m.body?.content),
-        images: hostedImageUrls(m.body?.content).length,
+        images: hostedImageUrls(m).length,
         attachments: (m.attachments || []).map((a) => a.name).filter(Boolean),
       }))
       .filter((m) => m.text || m.images || m.attachments.length),
@@ -156,7 +156,7 @@ async function toolChatImage(token, { chat_id, chat_name, message_id, index = 0 
   if (!message_id) throw new Error("message_id is required");
   const id = await chatIdFrom(token, { chat_id, chat_name });
   const m = await graphGet(token, `/chats/${encodeURIComponent(id)}/messages/${encodeURIComponent(message_id)}`);
-  const urls = hostedImageUrls(m.body?.content);
+  const urls = hostedImageUrls(m);
   if (!urls.length) throw new Error("That message carries no inline image");
   const url = urls[Number(index) || 0];
   if (!url) throw new Error(`Message has ${urls.length} image(s); index ${index} is out of range`);
