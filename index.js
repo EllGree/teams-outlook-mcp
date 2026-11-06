@@ -8,6 +8,8 @@ import { partitionTools, scopesFromToken } from "./lib/scopes.js";
 import { describeChat, hostedImageUrls, listChats, resolveChat } from "./lib/chats.js";
 import { appendSignatureHtml, appendSignatureText, htmlToText, textToHtml } from "./lib/html.js";
 import { READ_ONLY } from "./lib/config.js";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
 
 
 // An oversized base64 blob costs the caller its context and helps nobody, so past this a file is
@@ -36,6 +38,41 @@ function imageOrText(name, buffer, mediaType, fallbackUrl) {
     return { content: [{ type: "text", text: `${name} (${mediaType}):\n\n${buffer.toString("utf-8")}` }] };
   }
   return { content: [{ type: "text", text: `${name} is ${mediaType}, which this server does not inline. ${fallbackUrl ?? ""}`.trim() }] };
+}
+
+// ---- shared files (a file posted to a chat or channel) ----
+
+// A file dropped into Teams is not an inline image: it is uploaded to SharePoint/OneDrive and the
+// message only carries a `reference` attachment with its URL. Graph opens such a URL through
+// /shares, which takes the URL itself as an id ("u!" + unpadded base64url).
+function sharedFiles(m) {
+  return (m.attachments || [])
+    .filter((a) => a.contentType === "reference" && a.contentUrl)
+    .map((a) => ({ name: a.name || "file", url: a.contentUrl }));
+}
+
+function shareId(url) {
+  return "u!" + Buffer.from(url, "utf-8").toString("base64").replace(/=+$/, "").replace(/\//g, "_").replace(/\+/g, "-");
+}
+
+// Anything that can't be shown inline is written to disk for the caller to open, under a folder of
+// its own per message: a downloaded file is untrusted and should not land next to code.
+const FILE_DIR = resolve(process.env.LOCALAPPDATA ?? `${process.env.HOME}/AppData/Local`, "teams-outlook-mcp", "files");
+
+async function sharedFileResult(token, m, index) {
+  const files = sharedFiles(m);
+  if (!files.length) throw new Error("That message carries no shared file");
+  const f = files[Number(index) || 0];
+  if (!f) throw new Error(`Message has ${files.length} file(s); index ${index} is out of range`);
+  const { buffer, mediaType } = await graphGetBinary(token, `/shares/${shareId(f.url)}/driveItem/content`);
+  const label = `${f.name} (file ${Number(index) + 1} of ${files.length})`;
+  const inlineable = mediaType.startsWith("image/") || /^text\/|json|xml|yaml|csv/i.test(mediaType);
+  if (inlineable && buffer.length <= MAX_INLINE_BYTES) return imageOrText(label, buffer, mediaType, f.url);
+  const dir = join(FILE_DIR, String(m.id || "message").replace(/[^\w.-]/g, "_"));
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, basename(f.name).replace(/[<>:"/\\|?*]/g, "_"));
+  writeFileSync(path, buffer);
+  return { content: [{ type: "text", text: `${label}: ${mediaType}, ${buffer.length} bytes, saved to ${path}. Treat it as untrusted.` }] };
 }
 
 // ---- mail ----
@@ -157,11 +194,18 @@ async function toolChatImage(token, { chat_id, chat_name, message_id, index = 0 
   const id = await chatIdFrom(token, { chat_id, chat_name });
   const m = await graphGet(token, `/chats/${encodeURIComponent(id)}/messages/${encodeURIComponent(message_id)}`);
   const urls = hostedImageUrls(m);
-  if (!urls.length) throw new Error("That message carries no inline image");
+  if (!urls.length) throw new Error("That message carries no inline image; a file listed under its attachments is fetched with the *_file tool");
   const url = urls[Number(index) || 0];
   if (!url) throw new Error(`Message has ${urls.length} image(s); index ${index} is out of range`);
   const { buffer, mediaType } = await graphGetBinary(token, url);
   return imageOrText(`image ${Number(index) + 1} of ${urls.length}`, buffer, mediaType, url);
+}
+
+async function toolChatFile(token, { chat_id, chat_name, message_id, index = 0 }) {
+  if (!message_id) throw new Error("message_id is required");
+  const id = await chatIdFrom(token, { chat_id, chat_name });
+  const m = await graphGet(token, `/chats/${encodeURIComponent(id)}/messages/${encodeURIComponent(message_id)}`);
+  return sharedFileResult(token, m, index);
 }
 
 async function toolChatSend(token, { chat_id, chat_name, text }) {
@@ -277,11 +321,20 @@ async function toolChannelImage(token, { team_id, channel_id, message_id, parent
     : `${base}/${encodeURIComponent(message_id)}`;
   const m = await graphGet(token, path);
   const urls = hostedImageUrls(m);
-  if (!urls.length) throw new Error("That message carries no inline image");
+  if (!urls.length) throw new Error("That message carries no inline image; a file listed under its attachments is fetched with the *_file tool");
   const url = urls[Number(index) || 0];
   if (!url) throw new Error(`Message has ${urls.length} image(s); index ${index} is out of range`);
   const { buffer, mediaType } = await graphGetBinary(token, url);
   return imageOrText(`image ${Number(index) + 1} of ${urls.length}`, buffer, mediaType, url);
+}
+
+async function toolChannelFile(token, { team_id, channel_id, message_id, parent_message_id, index = 0 }) {
+  if (!team_id || !channel_id || !message_id) throw new Error("team_id, channel_id and message_id are required");
+  const base = `/teams/${encodeURIComponent(team_id)}/channels/${encodeURIComponent(channel_id)}/messages`;
+  const path = parent_message_id
+    ? `${base}/${encodeURIComponent(parent_message_id)}/replies/${encodeURIComponent(message_id)}`
+    : `${base}/${encodeURIComponent(message_id)}`;
+  return sharedFileResult(token, await graphGet(token, path), index);
 }
 
 async function toolChannelSend(token, { team_id, channel_id, text }) {
@@ -388,6 +441,22 @@ const TOOLS = [
     },
   },
   {
+    name: "chat_file",
+    scopes: ["Chat.Read", "Sites.Read.All"],
+    description:
+      "A file shared in a chat message (listed under attachments; not an inline image). Images and text come back inline; anything else is saved to disk and its path returned. Use index when a message carries several.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        chat_id: { type: "string" },
+        chat_name: { type: "string" },
+        message_id: { type: "string" },
+        index: { type: "number", default: 0 },
+      },
+      required: ["message_id"],
+    },
+  },
+  {
     name: "chat_send",
     scopes: ["ChatMessage.Send"],
     writes: true,
@@ -425,7 +494,7 @@ const TOOLS = [
     name: "channel_thread",
     scopes: ["ChannelMessage.Read.All"],
     description:
-      "One channel thread in full: the opening post and its replies, oldest first. To fetch an image from a reply, pass the reply's id to channel_image as message_id with this post's id as parent_message_id.",
+      "One channel thread in full: the opening post and its replies, oldest first. To fetch an image or a shared file from a reply, pass the reply's id to channel_image or channel_file as message_id with this post's id as parent_message_id.",
     inputSchema: {
       type: "object",
       properties: {
@@ -442,6 +511,23 @@ const TOOLS = [
     scopes: ["ChannelMessage.Read.All"],
     description:
       "The inline image in a channel post, returned as a viewable image. For an image inside a thread reply, pass the reply's id as message_id and the opening post's id as parent_message_id.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        team_id: { type: "string" },
+        channel_id: { type: "string" },
+        message_id: { type: "string" },
+        parent_message_id: { type: "string", description: "The opening post's id, when message_id is a reply" },
+        index: { type: "number", default: 0 },
+      },
+      required: ["team_id", "channel_id", "message_id"],
+    },
+  },
+  {
+    name: "channel_file",
+    scopes: ["ChannelMessage.Read.All", "Sites.Read.All"],
+    description:
+      "A file shared in a channel post or reply (listed under attachments; not an inline image). Images and text come back inline; anything else is saved to disk and its path returned. For a reply, pass its id as message_id and the opening post's id as parent_message_id.",
     inputSchema: {
       type: "object",
       properties: {
@@ -476,12 +562,14 @@ const HANDLERS = {
   chat_list: toolChatList,
   chat_messages: toolChatMessages,
   chat_image: toolChatImage,
+  chat_file: toolChatFile,
   chat_send: toolChatSend,
   team_list: toolTeamList,
   channel_list: toolChannelList,
   channel_messages: toolChannelMessages,
   channel_thread: toolChannelThread,
   channel_image: toolChannelImage,
+  channel_file: toolChannelFile,
   channel_send: toolChannelSend,
 };
 

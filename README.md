@@ -13,13 +13,17 @@ MCP server for Microsoft Teams and Outlook over the Graph API.
 | `mail_list`, `mail_get`, `mail_attachment` | `Mail.Read` |
 | `mail_send` | `Mail.Send` |
 | `chat_list`, `chat_messages`, `chat_image` | `Chat.Read` |
+| `chat_file` | `Chat.Read`, `Sites.Read.All` |
 | `chat_send` | `ChatMessage.Send` |
 | `team_list` | `Team.ReadBasic.All` |
 | `channel_list` | `Channel.ReadBasic.All` |
-| `channel_messages` | `ChannelMessage.Read.All` |
+| `channel_messages`, `channel_thread`, `channel_image` | `ChannelMessage.Read.All` |
+| `channel_file` | `ChannelMessage.Read.All`, `Sites.Read.All` |
 | `channel_send` | `ChannelMessage.Send` |
 
 Images come back as images rather than links, from mail attachments and from the inline images in Teams messages alike, so a screenshot someone posted can actually be read.
+
+A file dropped into a chat or channel is not an inline image: Teams uploads it to SharePoint and the message only lists it under attachments. `chat_file` and `channel_file` fetch it through Graph `/shares` (needs `Sites.Read.All`). Images and text come back inline; anything else is saved under `%LOCALAPPDATA%\teams-outlook-mcp\files\<message id>\` and the path is returned.
 
 Chats are addressed by `chat_id` or by `chat_name`: a group chat by its topic, a one-to-one by the other person. A name matching several chats refuses rather than guesses, because a send cannot be taken back.
 
