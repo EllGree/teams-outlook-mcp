@@ -376,7 +376,7 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        top: { type: "number", default: 15 },
+        top: { type: "number", default: 15 }, limit: { type: "number", description: "Same as top." },
         unread_only: { type: "boolean", default: false },
         from: { type: "string", description: "Exact sender address" },
         since: { type: "string", description: "ISO date; messages received at or after it" },
@@ -420,7 +420,7 @@ const TOOLS = [
     name: "chat_list",
     scopes: ["Chat.Read"],
     description: "Teams chats, one-to-one and group, each with a usable name: the other person, or the group topic.",
-    inputSchema: { type: "object", properties: { top: { type: "number", default: 50 } } },
+    inputSchema: { type: "object", properties: { top: { type: "number", default: 50 }, limit: { type: "number", description: "Same as top." } } },
   },
   {
     name: "chat_messages",
@@ -428,7 +428,7 @@ const TOOLS = [
     description: "Messages in a chat, addressed by chat_id or by chat_name. An ambiguous name refuses rather than guesses.",
     inputSchema: {
       type: "object",
-      properties: { chat_id: { type: "string" }, chat_name: { type: "string" }, top: { type: "number", default: 20 } },
+      properties: { chat_id: { type: "string" }, chat_name: { type: "string" }, top: { type: "number", default: 20 }, limit: { type: "number", description: "Same as top." } },
     },
   },
   {
@@ -492,7 +492,7 @@ const TOOLS = [
       "Opening posts in a channel, each with a reply count and the time of the last reply. The replies themselves are not included, so use channel_thread on any post whose count is worth reading. Ordered by last activity in the whole thread, so a post that just gained a reply comes first.",
     inputSchema: {
       type: "object",
-      properties: { team_id: { type: "string" }, channel_id: { type: "string" }, top: { type: "number", default: 20 } },
+      properties: { team_id: { type: "string" }, channel_id: { type: "string" }, top: { type: "number", default: 20 }, limit: { type: "number", description: "Same as top." } },
       required: ["team_id", "channel_id"],
     },
   },
@@ -507,7 +507,7 @@ const TOOLS = [
         team_id: { type: "string" },
         channel_id: { type: "string" },
         message_id: { type: "string", description: "The opening post's id, from channel_messages" },
-        top: { type: "number", default: 50 },
+        top: { type: "number", default: 50 }, limit: { type: "number", description: "Same as top." },
       },
       required: ["team_id", "channel_id", "message_id"],
     },
@@ -624,7 +624,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     // Refreshed per call: a long-running server outlives its access token.
     const fresh = await getAccessToken();
-    const result = await HANDLERS[name](fresh, args || {});
+    // `limit` is the name most callers reach for; Graph's is `top`. Accept both, so a call with
+    // `limit` is not silently answered with the default page size.
+    const a = { ...(args || {}) };
+    if (a.top == null && a.limit != null) a.top = a.limit;
+    delete a.limit;
+    const result = await HANDLERS[name](fresh, a);
     if (result && Array.isArray(result.content)) return result;
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   } catch (err) {
