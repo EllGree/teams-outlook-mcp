@@ -5,7 +5,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 
 import { getAccessToken, graphGet, graphGetBinary, graphPost } from "./lib/graph.js";
 import { partitionTools, scopesFromToken } from "./lib/scopes.js";
-import { describeChat, hostedImageUrls, listChats, resolveChat } from "./lib/chats.js";
+import { describeChat, hostedImageUrls, listChats, quotedMessage, resolveChat } from "./lib/chats.js";
 import { appendSignatureHtml, appendSignatureText, htmlToText, textToHtml } from "./lib/html.js";
 import { READ_ONLY } from "./lib/config.js";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -184,6 +184,7 @@ async function toolChatMessages(token, { chat_id, chat_name, top = 20 }) {
         text: htmlToText(m.body?.content),
         images: hostedImageUrls(m).length,
         attachments: (m.attachments || []).map((a) => a.name).filter(Boolean),
+        reply_to: quotedMessage(m) || undefined,
       }))
       .filter((m) => m.text || m.images || m.attachments.length),
   };
@@ -235,8 +236,11 @@ const realMessage = (m) => m.messageType === "message" && !m.deletedDateTime;
 // Not every attachment has a name. A card, and some shared references, carry only a
 // contentType, and mapping names alone turns those posts into empty ones: no text, no
 // author, nothing attached, which is what they are not. Say what the thing is instead.
+// A quoted message is not an attachment to the reader; it comes out as reply_to instead.
 const describeAttachments = (m) =>
-  (m.attachments || []).map((a) => a.name || a.contentType || "unnamed attachment");
+  (m.attachments || [])
+    .filter((a) => a.contentType !== "messageReference")
+    .map((a) => a.name || a.contentType || "unnamed attachment");
 
 // The channel view: opening posts with a reply count, not the replies themselves. Graph
 // hands the replies over in the same request via $expand, and they are deliberately
@@ -282,6 +286,7 @@ async function toolChannelMessages(token, { team_id, channel_id, top = 20 }) {
         // A shared file leaves the body empty and lives only in attachments, so without
         // this a post that is nothing but a file reads as a post with nothing in it.
         attachments: describeAttachments(m),
+        reply_to: quotedMessage(m) || undefined,
         // $expand caps at 200 replies per post, so a thread deeper than that undercounts.
         replies: replies.length,
         last_reply: last || undefined,
@@ -302,6 +307,7 @@ async function toolChannelThread(token, { team_id, channel_id, message_id, top =
     text: htmlToText(m.body?.content),
     images: hostedImageUrls(m).length,
     attachments: describeAttachments(m),
+    reply_to: quotedMessage(m) || undefined,
   });
   // Graph returns replies newest first; a conversation reads the other way.
   const replies = (r.value || [])
