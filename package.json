@@ -5,7 +5,7 @@
   "bin": { "teams-outlook-mcp": "./index.js" },
   "scripts": {
     "auth": "node auth.js",
-    "test": "node --test lib/scopes.test.js"
+    "test": "node --test lib/scopes.test.js lib/mentions.test.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0"

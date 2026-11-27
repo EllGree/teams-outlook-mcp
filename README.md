@@ -29,6 +29,8 @@ Chats are addressed by `chat_id` or by `chat_name`: a group chat by its topic, a
 
 Every outbound message carries the assistant signature.
 
+To tag someone in `chat_send` or `channel_send`, write `@[Display Name]` in the text, e.g. `cc @[Martin Nedbal]`. It becomes a real Teams mention that notifies the person; a plain `@Name` is only text. The person is looked up among the members of the chat being written to, then of all your chats, then your relevant people (`/me/people`), so no extra permission is needed. Case and accents don't matter. A name that matches nobody, or two different people, stops the send with nothing posted. `channel_send` also takes `reply_to` (the id of an opening post) to answer in a thread instead of starting a new one.
+
 ## Install
 
 Needs Node 18 or newer.

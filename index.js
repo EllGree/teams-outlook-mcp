@@ -8,6 +8,7 @@ import { partitionTools, scopesFromToken } from "./lib/scopes.js";
 import { describeChat, hostedImageUrls, listChats, quotedMessage, resolveChat } from "./lib/chats.js";
 import { appendSignatureHtml, appendSignatureText, htmlToText, textToHtml } from "./lib/html.js";
 import { READ_ONLY } from "./lib/config.js";
+import { mentionNames, resolveMentions, withMentionPlaceholders } from "./lib/mentions.js";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 
@@ -209,13 +210,24 @@ async function toolChatFile(token, { chat_id, chat_name, message_id, index = 0 }
   return sharedFileResult(token, m, index);
 }
 
+// The body of a message to send: the text as Teams HTML with the signature, and, when the text
+// tags people as @[Display Name], real mentions. Resolving happens before anything is posted, so
+// a name that matches nobody stops the send instead of going out as plain text.
+async function messageBody(token, text, { chatId } = {}) {
+  const names = mentionNames(text);
+  const people = await resolveMentions(token, names, { chatId });
+  const { text: placeheld, fill, mentions } = withMentionPlaceholders(text, people);
+  const payload = { body: { contentType: "html", content: appendSignatureHtml(fill(textToHtml(placeheld))) } };
+  if (mentions.length) payload.mentions = mentions;
+  return { payload, tagged: mentions.map((m) => m.mentionText) };
+}
+
 async function toolChatSend(token, { chat_id, chat_name, text }) {
   if (!text) throw new Error("text is required");
   const id = await chatIdFrom(token, { chat_id, chat_name });
-  const res = await graphPost(token, `/chats/${encodeURIComponent(id)}/messages`, {
-    body: { contentType: "html", content: appendSignatureHtml(textToHtml(text)) },
-  });
-  return { sent: true, chat_id: id, message_id: res?.id };
+  const { payload, tagged } = await messageBody(token, text, { chatId: id });
+  const res = await graphPost(token, `/chats/${encodeURIComponent(id)}/messages`, payload);
+  return { sent: true, chat_id: id, message_id: res?.id, tagged: tagged.length ? tagged : undefined };
 }
 
 // ---- teams and channels ----
@@ -343,13 +355,15 @@ async function toolChannelFile(token, { team_id, channel_id, message_id, parent_
   return sharedFileResult(token, await graphGet(token, path), index);
 }
 
-async function toolChannelSend(token, { team_id, channel_id, text }) {
+async function toolChannelSend(token, { team_id, channel_id, text, reply_to }) {
   if (!team_id || !channel_id) throw new Error("team_id and channel_id are required");
   if (!text) throw new Error("text is required");
-  const res = await graphPost(token, `/teams/${encodeURIComponent(team_id)}/channels/${encodeURIComponent(channel_id)}/messages`, {
-    body: { contentType: "html", content: appendSignatureHtml(textToHtml(text)) },
-  });
-  return { sent: true, message_id: res?.id };
+  const base = `/teams/${encodeURIComponent(team_id)}/channels/${encodeURIComponent(channel_id)}/messages`;
+  // A reply goes under its opening post; without reply_to this starts a new thread.
+  const path = reply_to ? `${base}/${encodeURIComponent(reply_to)}/replies` : base;
+  const { payload, tagged } = await messageBody(token, text);
+  const res = await graphPost(token, path, payload);
+  return { sent: true, message_id: res?.id, reply_to: reply_to || undefined, tagged: tagged.length ? tagged : undefined };
 }
 
 // ---- tool table ----
@@ -466,10 +480,15 @@ const TOOLS = [
     name: "chat_send",
     scopes: ["ChatMessage.Send"],
     writes: true,
-    description: "Post into a chat, addressed by chat_id or chat_name. The assistant signature is appended.",
+    description:
+      "Post into a chat, addressed by chat_id or chat_name. The assistant signature is appended. Tag a person with @[Display Name] in the text: it becomes a real mention that notifies them; a plain @Name does not. A name that matches nobody refuses the send.",
     inputSchema: {
       type: "object",
-      properties: { chat_id: { type: "string" }, chat_name: { type: "string" }, text: { type: "string" } },
+      properties: {
+        chat_id: { type: "string" },
+        chat_name: { type: "string" },
+        text: { type: "string", description: "Message text. @[Display Name] tags a person." },
+      },
       required: ["text"],
     },
   },
@@ -550,10 +569,16 @@ const TOOLS = [
     name: "channel_send",
     scopes: ["ChannelMessage.Send"],
     writes: true,
-    description: "Post into a channel. The assistant signature is appended.",
+    description:
+      "Post into a channel, as a new thread or, with reply_to, as a reply under an existing post. The assistant signature is appended. Tag a person with @[Display Name] in the text: it becomes a real mention that notifies them; a plain @Name does not. A name that matches nobody refuses the send.",
     inputSchema: {
       type: "object",
-      properties: { team_id: { type: "string" }, channel_id: { type: "string" }, text: { type: "string" } },
+      properties: {
+        team_id: { type: "string" },
+        channel_id: { type: "string" },
+        text: { type: "string", description: "Message text. @[Display Name] tags a person." },
+        reply_to: { type: "string", description: "Id of the opening post to reply under (from channel_messages)" },
+      },
       required: ["team_id", "channel_id", "text"],
     },
   },
